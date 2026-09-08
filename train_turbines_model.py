@@ -13,7 +13,7 @@ from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit, cross_validate
+from sklearn.model_selection import TimeSeriesSplit, cross_validate, RandomizedSearchCV
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
@@ -79,6 +79,42 @@ def build_models():
                    for name, model in scaled.items()})
     return models
 
+def tune_random_forest(X_train, y_train):
+    model = RandomForestRegressor(
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+    )
+
+    param_distributions = {
+        "n_estimators": [600, 800, 1000, 1200],
+        "max_depth": [15, 20, 25, None],
+        "min_samples_split": [2, 4, 6, 10],
+        "min_samples_leaf": [1, 2, 3, 4],
+        "max_features": ["sqrt", 0.7, 0.85, 1.0],
+    }
+
+    search = RandomizedSearchCV(
+        estimator=model,
+        param_distributions=param_distributions,
+        n_iter=40,
+        scoring="neg_mean_absolute_percentage_error",
+        cv=TimeSeriesSplit(n_splits=N_SPLITS),
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+        verbose=2,
+    )
+
+    search.fit(X_train, y_train)
+
+    print("\nMejores hiperparámetros encontrados:")
+    print(search.best_params_)
+
+    print(
+        f"Mejor MAPE de validación temporal: "
+        f"{-search.best_score_ * 100:.3f} %"
+    )
+
+    return search.best_estimator_
 
 def compare_models(models, X_train, y_train):
     scoring = {
@@ -161,12 +197,13 @@ def main():
     models = build_models()
     results = compare_models(models, X_train, y_train)
     results.to_csv(RESULTS_PATH, index=False, float_format="%.6f")
-    winner = str(results.iloc[0]["Modelo"])
-    evaluation_model = clone(models[winner])
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=ConvergenceWarning)
-        evaluation_model.fit(X_train, y_train)
-    predicted = np.asarray(evaluation_model.predict(X_test))
+
+    # Optimización de hiperparámetros de Random Forest
+    tuned_model = tune_random_forest(X_train, y_train)
+
+    # Evaluación del Random Forest optimizado sobre el 20 % final
+    predicted = np.asarray(tuned_model.predict(X_test))
+
     if len(predicted) != len(y_test) or not np.isfinite(predicted).all():
         raise RuntimeError("Las predicciones de prueba son inválidas.")
 
@@ -176,7 +213,6 @@ def main():
         / np.abs(y_test.to_numpy())
     ) * 100
 
-    # Metricas finales
     metrics = {
         "mae_mw": mean_absolute_error(y_test, predicted),
         "rmse_mw": mean_squared_error(y_test, predicted) ** .5,
@@ -185,8 +221,7 @@ def main():
         "within_1pct": np.mean(percentage_errors < 1) * 100,
     }
 
-    print(f"\nMejor modelo por MAPE de validación: {winner}")
-    print("\nEvaluación final sobre el 20 % más reciente:")
+    print("\nEvaluación final del Random Forest optimizado:")
     print(f"  MAE:  {metrics['mae_mw']:.4f} MW")
     print(f"  RMSE: {metrics['rmse_mw']:.4f} MW")
     print(f"  R²:   {metrics['r2']:.4f}")
