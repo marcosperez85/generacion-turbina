@@ -1,2 +1,10 @@
 .venv
+
+# Private datasets
 dataset_CC02.csv
+
+# Trained models
+*.joblib
+*.pkl
+
+comparacion_modelos.png
