@@ -58,7 +58,7 @@ def build_models():
     models = {
         "Baseline (mediana)": Pipeline([("model", DummyRegressor(strategy="median"))]),
         "Random Forest": Pipeline([("model", RandomForestRegressor(
-            n_estimators=200, max_depth=15, random_state=RANDOM_STATE, n_jobs=-1))]),
+            n_estimators=1000, max_depth=20, random_state=RANDOM_STATE, n_jobs=-1))]),
         "Gradient Boosting": Pipeline([("model", GradientBoostingRegressor(
             n_estimators=200, learning_rate=0.1, max_depth=5,
             random_state=RANDOM_STATE))]),
@@ -81,8 +81,13 @@ def build_models():
 
 
 def compare_models(models, X_train, y_train):
-    scoring = {"mae": "neg_mean_absolute_error",
-               "rmse": "neg_root_mean_squared_error", "r2": "r2"}
+    scoring = {
+        "mae": "neg_mean_absolute_error",
+        "rmse": "neg_root_mean_squared_error",
+        "mape": "neg_mean_absolute_percentage_error",
+        "r2": "r2",
+    }
+
     rows = []
     print(f"Comparando modelos con TimeSeriesSplit ({N_SPLITS} particiones)...")
     for name, model in models.items():
@@ -96,14 +101,29 @@ def compare_models(models, X_train, y_train):
             "Modelo": name,
             "MAE_CV_MW": -scores["test_mae"].mean(),
             "MAE_CV_STD_MW": (-scores["test_mae"]).std(ddof=1),
+
             "RMSE_CV_MW": -scores["test_rmse"].mean(),
+
+            "MAPE_CV_PCT": -scores["test_mape"].mean() * 100,
+            "MAPE_CV_STD_PCT": (-scores["test_mape"] * 100).std(ddof=1),
+
             "R2_CV": scores["test_r2"].mean(),
             "Tiempo_s": time.perf_counter() - start,
         }
+
         rows.append(row)
-        print(f"  {name:<24} MAE: {row['MAE_CV_MW']:.4f} MW | "
-              f"RMSE: {row['RMSE_CV_MW']:.4f} MW | R²: {row['R2_CV']:.4f}")
-    return pd.DataFrame(rows).sort_values("MAE_CV_MW").reset_index(drop=True)
+        print(
+            f"  {name:<24} "
+            f"MAE: {row['MAE_CV_MW']:.4f} MW | "
+            f"RMSE: {row['RMSE_CV_MW']:.4f} MW | "
+            f"MAPE: {row['MAPE_CV_PCT']:.3f} % | "
+            f"R²: {row['R2_CV']:.4f}"
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("MAPE_CV_PCT")
+        .reset_index(drop=True)
+    )
 
 
 def create_plots(results, dates, actual, predicted, model_name):
@@ -149,17 +169,34 @@ def main():
     predicted = np.asarray(evaluation_model.predict(X_test))
     if len(predicted) != len(y_test) or not np.isfinite(predicted).all():
         raise RuntimeError("Las predicciones de prueba son inválidas.")
+
+    # Error porcentual de cada predicción respecto del valor real
+    percentage_errors = (
+        np.abs(y_test.to_numpy() - predicted)
+        / np.abs(y_test.to_numpy())
+    ) * 100
+
+    # Metricas finales
     metrics = {
         "mae_mw": mean_absolute_error(y_test, predicted),
         "rmse_mw": mean_squared_error(y_test, predicted) ** .5,
         "r2": r2_score(y_test, predicted),
+        "mape_pct": percentage_errors.mean(),
+        "within_1pct": np.mean(percentage_errors < 1) * 100,
     }
-    print(f"\nMejor modelo por MAE de validación: {winner}")
+
+    print(f"\nMejor modelo por MAPE de validación: {winner}")
     print("\nEvaluación final sobre el 20 % más reciente:")
     print(f"  MAE:  {metrics['mae_mw']:.4f} MW")
     print(f"  RMSE: {metrics['rmse_mw']:.4f} MW")
     print(f"  R²:   {metrics['r2']:.4f}")
-    create_plots(results, test[DATE_COLUMN], y_test, predicted, winner)
+    print(f"  MAPE: {metrics['mape_pct']:.3f} %")
+    print(f"  Predicciones con error < 1 %: {metrics['within_1pct']:.2f} %")
+
+    if metrics["mape_pct"] < 1:
+        print("  Cumple objetivo de error porcentual promedio < 1 %")
+    else:
+        print("  No cumple objetivo de error porcentual promedio < 1 %")
 
     final_model = clone(models[winner])
     with warnings.catch_warnings():
