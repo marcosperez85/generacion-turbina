@@ -164,10 +164,19 @@ def compare_models(models, X_train, y_train):
 
 def create_plots(results, dates, actual, predicted, model_name):
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    sns.barplot(data=results, x="MAE_CV_MW", y="Modelo",
-                ax=axes[0], color="skyblue")
-    axes[0].set(title="MAE medio en validación temporal",
-                xlabel="MAE (MW; menor es mejor)", ylabel="")
+    sns.barplot(
+        data=results,
+        x="MAPE_CV_PCT",
+        y="Modelo",
+        ax=axes[0],
+        color="skyblue",
+    )
+
+    axes[0].set(
+        title="MAPE medio en validación temporal",
+        xlabel="MAPE (%; menor es mejor)",
+        ylabel="",
+    )
     axes[1].plot(dates, actual, label="Real", linewidth=1.2)
     axes[1].plot(dates, predicted, label="Predicción", linewidth=1, alpha=.85)
     axes[1].set(title=f"Prueba temporal — {model_name}", ylabel="MW_ST (MW)")
@@ -233,13 +242,21 @@ def main():
     else:
         print("  No cumple objetivo de error porcentual promedio < 1 %")
 
-    final_model = clone(models[winner])
+    final_model = clone(tuned_model)
+
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=ConvergenceWarning)
         final_model.fit(df[FEATURES], df[TARGET])
-    artifact = {"model": final_model, "model_name": winner, "features": FEATURES,
-                "target": TARGET, "trained_until": df[DATE_COLUMN].max().isoformat(),
-                "test_metrics": metrics}
+
+    artifact = {
+        "model": final_model,
+        "model_name": "Random Forest optimizado",
+        "features": FEATURES,
+        "target": TARGET,
+        "trained_until": df[DATE_COLUMN].max().isoformat(),
+        "test_metrics": metrics,
+        "hyperparameters": tuned_model.get_params(),
+    }
     joblib.dump(artifact, MODEL_PATH)
     loaded = joblib.load(MODEL_PATH)
     check = loaded["model"].predict(df[FEATURES].iloc[[0]])
