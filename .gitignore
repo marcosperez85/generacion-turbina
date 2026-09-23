@@ -5,6 +5,13 @@ dataset_CC02.csv
 
 # Trained models
 *.joblib
+*.onnx
 *.pkl
 
 comparacion_modelos.png
+
+# Python caches and generated search configuration
+__pycache__/
+.pytest_cache/
+best_rf_params.json
+rf_production_report.json
