@@ -1,153 +1,94 @@
-# Predicción de generación de energía con turbinas
+# Predicción de generaciónn de energía con turbinas
 
-Este proyecto entrena, compara y optimiza modelos de regresión para predecir la
-potencia continua `MW_ST` de un proceso de generación de energía con turbinas.
+Predice `MW_ST` con `MW_TG`, `Humedad`, `Presion`, `Temp`, `Viento`,
+`Viento_cos`, `Viento_sin` y `VIGV`. La columna `fecha` determina el orden temporal.
 
-El flujo respeta el orden cronológico de las observaciones: utiliza el 80 %
-inicial para entrenamiento y validación temporal y reserva el 20 % más reciente
-como conjunto de prueba final. De esta forma, la evaluación representa mejor el
-uso del modelo para predecir períodos futuros y evita mezclar observaciones
-futuras dentro del entrenamiento.
+## Instalación y ejecución
 
-## Requisitos
-
-- Python 3.10 o posterior.
-- Un archivo privado `dataset_CC02.csv` con las columnas requeridas por el script.
-- Las dependencias indicadas en `requirements.txt`.
-
-## Instalación
-
-Desde la carpeta del proyecto, crear y activar un entorno virtual:
+Usar un entorno Python compatible con las versiones de `requirements.txt`:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python search_random_forest.py
+python train_random_forest.py
+python -m unittest discover -v
 ```
 
-Instalar las librerías:
+Colocar el archivo privado `dataset_CC02.csv` en la carpeta del proyecto.
+Está excluido por `.gitignore`: no subirlo a Git ni usar datos reales en tests.
+Los tests usan datos sintéticos, unittest (incluido en Python) y bosques pequeños.
+
+## Responsabilidades
+
+- `turbines_common.py`: carga, validación de columnas, fechas, faltantes y
+  timestamps duplicados; ordenamiento estable por fecha, corte temporal y métricas.
+- `search_random_forest.py`: compara los ocho modelos originales (mediana,
+  Random Forest, Gradient Boosting, XGBoost, regresión lineal, SVR, KNN y MLP)
+  exclusivamente sobre el 80 % inicial, con cinco particiones de TimeSeriesSplit.
+  Guarda `resultados_modelos.csv`. Ejecuta RandomizedSearchCV con las mismas
+  distribuciones, 40 combinaciones, semilla 42 y MAPE como objetivo.
+  Guarda la configuración completa del mejor bosque en `best_rf_params.json`,
+  incluyendo los hiperparámetros seleccionados, la semilla y n_jobs.
+- `train_random_forest.py`: lee ese JSON sin repetir la búsqueda. Entrena con
+  `int(n * 0.8)` filas iniciales, evalúa sobre las restantes y guarda
+  `rf_validation.joblib`. Clona la configuración, entrena con todas las filas
+  y guarda `rf_production.joblib`.
+- `train_turbines_model.py`: entrada compatible que ejecuta ambas etapas.
+
+Las rutas se resuelven respecto de los scripts. La etapa de entrenamiento
+requiere el JSON generado por la búsqueda. No se genera un gráfico: la función
+anterior de gráficos no se invocaba. El antiguo `best_turbines_model.joblib`
+no se actualiza; los consumidores deben elegir uno de los nuevos artefactos.
+Los scripts locales de conversión ONNX que usen el nombre anterior necesitan
+recibir explícitamente el nuevo archivo mediante `--model`.
+
+## Artefactos y métricas
+
+Cada joblib contiene `model`, `model_name`, `role`, `features`, `target`,
+`trained_from`, `trained_until`, `training_rows`, `hyperparameters`,
+`test_metrics`, `metrics_source`, `test_from`, `test_until` y `test_rows`.
+Para predecir: cargar con `joblib.load` y usar
+`artifact["model"].predict(df[artifact["features"]])`.
+Los joblib y el JSON generado están ignorados por Git.
+
+Se conservan MAE en MW, RMSE en MW, R2, MAPE porcentual y `within_1pct`,
+el porcentaje de errores absolutos relativos estrictamente menores al 1 %.
+La evaluación final divide por el valor absoluto real sin epsilon: los ceros
+pueden producir infinito o NaN. La búsqueda conserva el scorer de sklearn,
+que sí utiliza epsilon. No se modifican estas definiciones estadísticas.
+
+## Límites de la evaluación temporal
+
+La búsqueda y el ajuste de escaladores (dentro de Pipeline) utilizan solamente
+el 80 % inicial. No usar el 20 % final para elegir parámetros o repetir decisiones
+hasta mejorar sus métricas. Mantener el mismo dataset entre búsqueda y entrenamiento;
+un JSON de otro período podría haber utilizado información del holdout actual.
+Verificar que las features están disponibles al predecir y no se hayan calculado
+con datos futuros. TimeSeriesSplit conserva su gap original de cero.
+El MLP conserva early_stopping con validación interna aleatoria: esa validación
+interna no es temporal, aunque nunca accede al holdout externo.
+
+Las métricas de ambos artefactos provienen exclusivamente de `rf_validation`.
+El modelo de producción ya vio el 20 % final; esas métricas no constituyen una
+evaluación independiente del modelo reentrenado. Evaluarlo requiere datos futuros.
+
+## Conversión del modelo de producción a ONNX
+
+Desde la carpeta del proyecto, con el entorno virtual activo y luego de generar
+`rf_production.joblib` con `train_random_forest.py`, ejecutar:
 
 ```powershell
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python convert_validate_onnx.py --model rf_production.joblib --output rf_production.onnx --report rf_production_report.json
 ```
 
-En Linux o macOS, la activación equivalente es:
+El conversor usa por defecto `dataset_CC02.csv` y compara las predicciones de
+scikit-learn y ONNX sobre el 20 % final. Genera `rf_production.onnx` y el reporte
+`rf_production_report.json`, que incluye las diferencias y la equivalencia de
+predicciones. Indicar `--model` es necesario porque el valor predeterminado sigue
+siendo el antiguo `best_turbines_model.joblib`.
 
-```bash
-source .venv/bin/activate
-```
-
-## Dataset confidencial
-
-El archivo `dataset_CC02.csv` contiene información confidencial y **no se
-incluye en el repositorio**.
-
-Cada usuario autorizado debe colocar su copia del archivo en la misma carpeta
-que `train_turbines_model.py`. No se debe quitar esta regla de `.gitignore`,
-subir el dataset a Git ni incluir muestras con información real en incidencias,
-commits o documentación.
-
-El script utiliza las siguientes variables predictoras:
-
-- `MW_TG`
-- `Humedad`
-- `Presion`
-- `Temp`
-- `Viento`
-- `Viento_cos`
-- `Viento_sin`
-- `VIGV`
-
-La variable objetivo es `MW_ST` y la columna `fecha` se utiliza para mantener
-el orden temporal de los datos.
-
-## Entrenamiento y evaluación
-
-Con el entorno virtual activo y el dataset en la carpeta del proyecto:
-
-```powershell
-python train_turbines_model.py
-```
-
-El script realiza lo siguiente:
-
-1. Carga el dataset y valida columnas requeridas, fechas, valores faltantes y
-   timestamps duplicados.
-2. Ordena las observaciones cronológicamente por `fecha`.
-3. Reserva el 20 % más reciente como conjunto de prueba final.
-4. Compara ocho alternativas de regresión sobre el 80 % de entrenamiento
-   mediante cinco particiones de `TimeSeriesSplit`.
-5. Calcula MAE, RMSE, MAPE y R² para cada modelo durante la validación temporal.
-6. Ordena la comparación de modelos según el menor MAPE medio de validación.
-7. Ejecuta una optimización específica de Random Forest mediante
-   `RandomizedSearchCV`, utilizando nuevamente `TimeSeriesSplit` y MAPE como
-   función objetivo.
-8. Evalúa el Random Forest optimizado sobre el 20 % más reciente, que no
-   participa de la búsqueda de hiperparámetros.
-9. Calcula las métricas finales y el porcentaje de predicciones cuyo error
-   porcentual absoluto es inferior al 1 %.
-10. Reentrena la configuración optimizada con todo el histórico disponible y
-    guarda el modelo junto con sus metadatos y métricas.
-
-Los modelos comparados son un baseline por mediana, regresión lineal, Random
-Forest, Gradient Boosting, XGBoost, SVR con kernel RBF, K-Nearest Neighbors y
-una red neuronal MLP. El escalado se ejecuta dentro de un `Pipeline` para los
-modelos que lo requieren, evitando fuga de información entre particiones.
-
-## Optimización de Random Forest
-
-Después de la comparación inicial, el script utiliza `RandomizedSearchCV` para
-buscar una mejor configuración de Random Forest sin utilizar el conjunto de
-prueba final para seleccionar los hiperparámetros.
-
-Actualmente se exploran combinaciones de:
-
-- `n_estimators`
-- `max_depth`
-- `min_samples_split`
-- `min_samples_leaf`
-- `max_features`
-
-La búsqueda prueba 40 combinaciones y evalúa cada una mediante cinco
-particiones temporales. La configuración seleccionada es la que obtiene el
-menor MAPE medio de validación.
-
-## Métricas
-
-- **MAPE (%):** criterio principal de optimización y comparación con el objetivo
-  de error porcentual. Representa el promedio del error porcentual absoluto.
-- **MAE (MW):** error absoluto medio expresado en la misma unidad que la potencia.
-- **RMSE (MW):** penaliza con mayor intensidad los errores grandes.
-- **R²:** mide la proporción de variabilidad explicada por el modelo.
-- **Predicciones con error < 1 %:** porcentaje de observaciones del conjunto de
-  prueba cuyo error porcentual absoluto individual es inferior al 1 %.
-
-El objetivo de error porcentual se evalúa actualmente como un MAPE inferior al
-1 %. El porcentaje de predicciones individuales dentro del 1 % se informa como
-una métrica complementaria y no como el criterio principal de selección.
-
-## Archivos generados
-
-Después de la ejecución se generan:
-
-- `best_turbines_model.joblib`: modelo Random Forest optimizado y reentrenado
-  con todo el histórico disponible, junto con metadatos y métricas de prueba.
-  El archivo se excluye del repositorio mediante `.gitignore` porque es un
-  artefacto generado y puede tener un tamaño considerable.
-- `resultados_modelos.csv`: comparación de los ocho modelos durante la
-  validación temporal, incluyendo MAE, RMSE, MAPE, R² y variabilidad del error.
-- `comparacion_modelos.png`: comparación gráfica de los modelos, serie real
-  frente a predicción y análisis de residuos. El archivo también puede
-  excluirse del repositorio si se considera un artefacto generado.
-
-## Despliegue
-
-El modelo se entrena actualmente con scikit-learn y se guarda localmente en
-formato `joblib`. El despliegue en producción todavía no forma parte de este
-script.
-
-Como siguiente etapa se evalúa convertir el Random Forest a formato ONNX para
-su ejecución en un runtime compatible. Antes de utilizar el modelo convertido
-en producción, las predicciones del modelo ONNX deben validarse contra las del
-modelo original de scikit-learn para comprobar que la conversión conserva su
-comportamiento.
+La advertencia de que el modelo ya vio el período de validación es esperable:
+se entrenó con el 100 % de los datos. Estas métricas permiten verificar la
+conversión, pero no miden el rendimiento sobre datos nuevos.
