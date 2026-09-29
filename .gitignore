@@ -1,4 +1,5 @@
 .venv
+__pycache__/
 
 # Private datasets
 dataset_CC02.csv
@@ -6,5 +7,9 @@ dataset_CC02.csv
 # Trained models
 *.joblib
 *.pkl
+*.onnx
 
 comparacion_modelos.png
+rf_production_report.json
+best_rf_params.json
+
